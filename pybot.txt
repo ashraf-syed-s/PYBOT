@@ -1,0 +1,292 @@
+# app.py (PyBot - Gemini AI Chatbot)
+
+import streamlit as st
+import speech_recognition as sr
+import google.generativeai as genai
+from gtts import gTTS
+import os
+
+# --- 1. UI CONFIGURATION & STYLING ---
+
+st.set_page_config(page_title="PyBot", layout="wide", initial_sidebar_state="auto")
+
+# Theme Toggle
+with st.sidebar:
+    theme = st.radio("Theme", ["🌞 Light", "🌙 Dark"], key="theme_selector")
+
+def load_css():
+    st.markdown("""
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap');
+            html, body, [class*="st-"] {
+                font-family: 'Inter', sans-serif;
+            }
+            .stApp {
+                background-image: linear-gradient(180deg, #FFFDE7, #BBDEFB);  /* Yellow to Blue */
+                color: #1E1E1E;
+            }
+            footer, [data-testid="stHeader"] {
+                visibility: hidden;
+            }
+            h1 {
+                text-align: center;
+                color: #0D47A1;
+                font-weight: 700;
+            }
+            p[data-testid="stCaption"] {
+                text-align: center;
+                color: #1565C0;
+            }
+            [data-testid="stSidebar"] {
+                background-color: #FFFFFF;
+                border-right: 1px solid #BBDEFB;
+            }
+            .stButton>button {
+                width: 100%;
+                border-radius: 0.5rem;
+                color: #0D47A1;
+                background-color: #FFF9C4;
+                border: 1px solid #FFECB3;
+            }
+            .stButton>button:hover {
+                background-color: #FFE082;
+                border-color: #FFD54F;
+                color: #0D47A1;
+            }
+            .chat-message {
+                padding: 1rem 1.25rem;
+                border-radius: 1.25rem;
+                margin-bottom: 1rem;
+                box-shadow: 0 4px 20px 0 rgba(0,0,0,0.08);
+                display: flex;
+                align-items: flex-start;
+                gap: 15px;
+                max-width: 80%;
+                opacity: 0;
+                animation: slideIn 0.4s ease-out forwards;
+                border: 1px solid #E0E0E0;
+            }
+            @keyframes slideIn {
+                from { opacity: 0; transform: translateY(20px); }
+                to { opacity: 1; transform: translateY(0); }
+            }
+            .chat-avatar {
+                width: 40px;
+                height: 40px;
+                border-radius: 50%;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 1.5rem;
+                flex-shrink: 0;
+            }
+            .message-content {
+                padding-top: 5px;
+            }
+            .user-message-container {
+                display: flex;
+                justify-content: flex-end;
+            }
+            .user-message {
+                background-color: #1976D2;
+                color: #FFFFFF;
+                border-top-right-radius: 0.5rem;
+            }
+            .user-avatar {
+                background-color: #0D47A1;
+                color: #FFFFFF;
+            }
+            .assistant-message-container {
+                display: flex;
+                justify-content: flex-start;
+            }
+            .assistant-message {
+                background-color: #FFF9C4;
+                color: #212529;
+                border-top-left-radius: 0.5rem;
+            }
+            .assistant-avatar {
+                background-color: #FFF59D;
+                color: #212121;
+            }
+        </style>
+    """, unsafe_allow_html=True)
+    if theme == "🌙 Dark":
+        st.markdown("""
+            <style>
+                .stApp {
+                    background-color: #121212 !important;
+                    color: white !important;
+                }
+            </style>
+        """, unsafe_allow_html=True)
+
+load_css()
+
+# --- 2. INITIALIZATION ---
+def get_voice_components():
+    if 'recognizer' not in st.session_state:
+        try:
+            st.session_state.recognizer = sr.Recognizer()
+        except Exception as e:
+            st.error(f"Error initializing Speech Recognizer: {e}")
+            st.session_state.recognizer = None
+    return st.session_state.get('recognizer')
+
+def speak_text(text):
+    try:
+        tts = gTTS(text)
+        tts.save("response.mp3")
+        audio_file = open("response.mp3", "rb")
+        audio_bytes = audio_file.read()
+        st.audio(audio_bytes, format="audio/mp3")
+    except Exception as e:
+        st.warning(f"Text-to-speech failed: {e}")
+
+# --- 3. SESSION STATE ---
+if 'api_key' not in st.session_state:
+    st.session_state.api_key = None
+if 'all_chats' not in st.session_state:
+    st.session_state.all_chats = []
+if 'active_chat_index' not in st.session_state:
+    st.session_state.active_chat_index = -1
+
+# --- 4. GEMINI API SETUP ---
+if not st.session_state.api_key:
+    api_key_input = st.text_input("Enter your Google Gemini API Key:", type="password", key="api_key_input_widget")
+    if api_key_input:
+        st.session_state.api_key = api_key_input
+        st.rerun()
+else:
+    if not st.session_state.all_chats:
+        try:
+            genai.configure(api_key=st.session_state.api_key)
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            st.session_state.all_chats.append({
+                'history': [],
+                'gemini_chat': model.start_chat(history=[])
+            })
+            st.session_state.active_chat_index = 0
+            if 'model_initialized' not in st.session_state:
+                st.success("Gemini model initialized successfully!")
+                st.session_state.model_initialized = True
+        except Exception as e:
+            st.error(f"Failed to configure Gemini: {e}. Please check your API key and try again.")
+            st.session_state.api_key = None
+
+# --- 5. SIDEBAR ---
+def new_chat():
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        new_chat_session = {
+            'history': [],
+            'gemini_chat': model.start_chat(history=[])
+        }
+        st.session_state.all_chats.append(new_chat_session)
+        st.session_state.active_chat_index = len(st.session_state.all_chats) - 1
+        st.rerun()
+    except Exception as e:
+        st.error(f"Could not start a new chat: {e}")
+
+with st.sidebar:
+    st.title("Chats")
+    if st.button("➕ New Chat", use_container_width=True, disabled=(not st.session_state.api_key)):
+        new_chat()
+
+    st.markdown("---")
+
+    if not st.session_state.all_chats:
+        st.info("Your conversations will appear here.")
+    else:
+        for i, chat_session in enumerate(st.session_state.all_chats):
+            chat_title = "New Chat"
+            for msg in chat_session['history']:
+                if msg['role'] == 'user':
+                    chat_title = msg['content'][:30] + ("..." if len(msg['content']) > 30 else "")
+                    break
+            cols = st.columns([0.75, 0.15, 0.1])
+            with cols[0]:
+                if st.button(f"💬 {chat_title}", key=f"chat_{i}", use_container_width=True):
+                    st.session_state.active_chat_index = i
+                    st.rerun()
+            with cols[1]:
+                if st.button("✏️", key=f"rename_{i}"):
+                    new_title = st.text_input("Rename Chat", key=f"rename_input_{i}")
+                    if new_title:
+                        chat_session['history'].insert(0, {"role": "user", "content": new_title})
+                        st.rerun()
+            with cols[2]:
+                if st.button("❌", key=f"del_{i}"):
+                    del st.session_state.all_chats[i]
+                    st.session_state.active_chat_index = 0 if st.session_state.all_chats else -1
+                    st.rerun()
+
+# --- 6. CHAT INTERFACE ---
+st.markdown("<h1 style='text-align: center;'>PyBot</h1>", unsafe_allow_html=True)
+st.caption("Powered by Google Gemini")
+
+active_chat_history = []
+if st.session_state.active_chat_index != -1 and st.session_state.all_chats:
+    active_chat_history = st.session_state.all_chats[st.session_state.active_chat_index]['history']
+
+if not active_chat_history and st.session_state.api_key:
+    st.info("Welcome to PyBot! How can I help you today?")
+
+chat_container = st.container()
+with chat_container:
+    for message in active_chat_history:
+        is_user = message["role"] == "user"
+        avatar_emoji = "👨‍💻" if is_user else "🤖"
+        container_class = "user-message-container" if is_user else "assistant-message-container"
+        message_class = "chat-message user-message" if is_user else "chat-message assistant-message"
+        avatar_class = "chat-avatar user-avatar" if is_user else "chat-avatar assistant-avatar"
+        st.markdown(f"""
+            <div class="{container_class}">
+                <div class="{message_class}">
+                    <div class="{avatar_class}">{avatar_emoji}</div>
+                    <div class="message-content">{message['content']}</div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+
+if active_chat_history:
+    chat_export = "\n\n".join(f"{msg['role'].capitalize()}: {msg['content']}" for msg in active_chat_history)
+    st.download_button("📥 Download Chat as TXT", chat_export, file_name="pybot_chat.txt")
+
+# --- 7. CORE FUNCTION ---
+def generate_response(user_input):
+    idx = st.session_state.active_chat_index
+    if idx == -1:
+        return
+    session = st.session_state.all_chats[idx]
+    session['history'].append({"role": "user", "content": user_input})
+    try:
+        response = session['gemini_chat'].send_message(user_input)
+        ai_response = response.text or "Sorry, I didn't get that."
+    except Exception as e:
+        ai_response = f"An error occurred: {e}"
+    session['history'].append({"role": "assistant", "content": ai_response})
+    speak_text(ai_response)
+
+# --- 8. INPUTS ---
+if prompt := st.chat_input("Ask PyBot...", disabled=(st.session_state.active_chat_index == -1)):
+    with st.spinner("PyBot is thinking..."):
+        generate_response(prompt)
+    st.rerun()
+
+if st.button("Ask with Voice 🎙️", use_container_width=True, disabled=(st.session_state.active_chat_index == -1)):
+    with st.spinner("Listening..."):
+        r = get_voice_components()
+        if r:
+            with sr.Microphone() as source:
+                r.adjust_for_ambient_noise(source, duration=0.5)
+                try:
+                    audio = r.listen(source, timeout=5, phrase_time_limit=10)
+                    spoken_prompt = r.recognize_google(audio, language='en-in')
+                    with st.spinner("PyBot is thinking..."):
+                        generate_response(spoken_prompt)
+                    st.rerun()
+                except Exception as e:
+                    st.warning(f"Could not process voice input: {e}")
+        else:
+            st.error("Speech recognizer not available.")
